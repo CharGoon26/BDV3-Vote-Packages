@@ -139,7 +139,7 @@ class Vote(commands.Cog):
         embed = discord.Embed(
             title="Vote Rewards",
             description=(
-                "Vote on any configured site to receive **1 random card!**\n"
+                "Vote on any site to receive **1 random card!**\n"
                 "Keep your DMs open so the reward message can reach you."
             ),
             color=discord.Color.blurple(),
