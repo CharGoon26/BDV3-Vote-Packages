@@ -18,12 +18,12 @@ packages = [
     "discordbotlist_notifier.migrations",
     "botlistme_notifier",
     "botlistme_notifier.migrations",
-    "vote_pkg",
+    "vote_links",
 ]
 
 [tool.setuptools.package-dir]
-topgg_notifier = "vote_packages/topgg_notifier/topgg_notifier"
-discordlist_notifier = "vote_packages/discordlist_notifier/discordlist_notifier"
-discordbotlist_notifier = "vote_packages/discordbotlist_notifier/discordbotlist_notifier"
-botlistme_notifier = "vote_packages/botlistme_notifier/botlistme_notifier"
-vote_pkg = "vote_packages/vote_package/vote_pkg"
+topgg_notifier = "topgg_notifier"
+discordlist_notifier = "discordlist_notifier"
+discordbotlist_notifier = "discordbotlist_notifier"
+botlistme_notifier = "botlistme_notifier"
+vote_links = "vote_links"
