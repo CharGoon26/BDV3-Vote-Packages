@@ -159,7 +159,10 @@ class Vote(commands.Cog):
             embed.set_footer(text="The /vote command will update automatically once links are added.")
             view = None
 
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
+        if view is None:
+            await interaction.response.send_message(embed=embed, ephemeral=False)
+        else:
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
 
 
 async def setup(bot: "BallsDexBot"):
