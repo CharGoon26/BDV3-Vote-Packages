@@ -66,6 +66,8 @@ docker compose up -d
 ## How to use
 
 1. Top.gg
+* Head to your bot on topgg and then click edit
+<img width="1044" height="485" alt="image" src="https://github.com/user-attachments/assets/f813d0dd-3946-40d4-88b9-1f1bf1d8a96a" />
 
 2. DiscordList
 
