@@ -72,7 +72,7 @@ docker compose up -d
 * Click integrations and API
 <img width="1417" height="336" alt="image" src="https://github.com/user-attachments/assets/82de24df-00f9-45ce-835b-a360b543805a" />
 
-* Create a new webhook. Your webhook should be your admin panel link with /topgg/webhook at the end. E.G. https://drwhodex.ballsdex.com/topgg/webhook.Label it whatever you want and tick vote created
+* Create a new webhook. Your webhook should be your admin panel link with /topgg/webhook at the end (E.G. https://drwhodex.ballsdex.com/topgg/webhook). Label it whatever you want and tick vote created
 <img width="544" height="437" alt="image" src="https://github.com/user-attachments/assets/d6d5f7fe-e56b-4a17-9556-da076aee95e9" />
 
 * Copy the webhook secret and paste it into the topgg configuration in the admin panel
