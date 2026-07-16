@@ -83,7 +83,7 @@ docker compose up -d
 
 2. DiscordList
 * Click manage
-  <img width="497" height="215" alt="image" src="https://github.com/user-attachments/assets/4b966cfc-183c-4e16-8af2-398cfa0b698f" />
+<img width="497" height="215" alt="image" src="https://github.com/user-attachments/assets/4b966cfc-183c-4e16-8af2-398cfa0b698f" />
 
 * Click 'Webhooks' and fill in the URL like in topgg, except at the end, put /discordlist/webhook (E.G. https://drwhodex.ballsdex.com/discordlist/webhook).
   <img width="1577" height="798" alt="image" src="https://github.com/user-attachments/assets/1102e48e-061b-4285-8ddc-6c8f7b08a6a9" />
