@@ -1,4 +1,4 @@
-<img width="544" height="437" alt="image" src="https://github.com/user-attachments/assets/54338095-62d0-426d-a9ab-51b54dcc0ad3" /># BDV3-Vote-Packages
+# BDV3-Vote-Packages
 Vote package for different voting websites for your Dex instance.
 
 ## Included packages
