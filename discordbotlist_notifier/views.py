@@ -17,6 +17,7 @@ from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
+from settings.models import settings
 from bd_models.models import Player
 
 from .models import DiscordBotListConfig
@@ -214,7 +215,7 @@ def _log_payload(payload: dict, payload_source: str) -> None:
 
 
 async def _send_vote_notification(user_id: int, ball, is_new: bool, config: DiscordBotListConfig | None) -> bool:
-    token = os.environ.get("DISCORD_TOKEN") or os.environ.get("BOT_TOKEN") or os.environ.get("TOKEN")
+    token = settings.bot_token or os.environ.get("BOT_TOKEN") or os.environ.get("TOKEN")
     channel_id = None
     if config and config.notification_channel_id:
         channel_id = str(config.notification_channel_id)
@@ -275,7 +276,7 @@ def _build_reward_dm(ball, is_new: bool) -> str:
 
 
 async def _send_dm(user_id: int, content: str) -> bool:
-    token = os.environ.get("DISCORD_TOKEN") or os.environ.get("BOT_TOKEN") or os.environ.get("TOKEN")
+    token = settings.bot_token or os.environ.get("BOT_TOKEN") or os.environ.get("TOKEN")
     if not token:
         log.warning("Cannot send DiscordBotList reward DM: bot token not available in admin-panel env.")
         return False
