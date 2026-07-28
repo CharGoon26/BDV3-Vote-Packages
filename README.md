@@ -52,6 +52,9 @@ path("discordlist/", include("discordlist_notifier.urls")),
 path("discordbotlist/", include("discordbotlist_notifier.urls")),
 path("botlistme/", include("botlistme_notifier.urls")),
 ```
+It should look like this
+<img width="798" height="712" alt="image" src="https://github.com/user-attachments/assets/583fbd3f-c69f-4d98-ad19-3eb110005bd3" />
+
 
 ## Update
 
