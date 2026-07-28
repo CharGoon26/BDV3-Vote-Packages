@@ -169,7 +169,7 @@ def _extract_user_id(payload: dict) -> int | None:
                 user.get("platform_id"),
             ]
         )
-    elif isinstance(user, str):
+    elif user not in (None, ""):
         candidates.append(user)
 
     for candidate in candidates:
@@ -184,7 +184,7 @@ def _extract_user_id(payload: dict) -> int | None:
 
 
 def _extract_vote_id(payload: dict) -> str | None:
-    for key in ("vote_id", "id", "event_id", "transaction_id"):
+    for key in ("vote_id", "event_id", "transaction_id", "voteId", "eventId"):
         value = payload.get(key)
         if value not in (None, ""):
             return str(value)
@@ -375,33 +375,53 @@ def _dispatch_vote_reward(user_id: int, vote_id: str | None, config: DiscordGGCo
     thread.start()
 
 
+def _with_cors(request: HttpRequest, response: HttpResponse) -> HttpResponse:
+    origin = request.headers.get("origin")
+    if origin:
+        response["Access-Control-Allow-Origin"] = origin
+        response["Vary"] = "Origin"
+    else:
+        response["Access-Control-Allow-Origin"] = "*"
+    response["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+    request_headers = request.headers.get("access-control-request-headers")
+    if request_headers:
+        response["Access-Control-Allow-Headers"] = request_headers
+    else:
+        response["Access-Control-Allow-Headers"] = "Authorization, Content-Type, X-Requested-With, Accept"
+    response["Access-Control-Max-Age"] = "600"
+    response["Access-Control-Allow-Credentials"] = "true"
+    return response
+
+
 @csrf_exempt
 async def discordlist_vote_webhook(request: HttpRequest) -> HttpResponse:
+    if request.method == "OPTIONS":
+        return _with_cors(request, HttpResponse(status=204))
     if request.method != "POST":
-        return HttpResponse(status=405)
+        return _with_cors(request, HttpResponse(status=405))
 
     config = await _get_config()
     expected_token = config.webhook_secret if config and config.webhook_secret else None
     payload, error_response, payload_source = _load_payload(request, expected_token)
     if error_response:
-        return error_response
+        return _with_cors(request, error_response)
     assert payload is not None
     _log_payload(payload, payload_source)
 
     if not expected_token:
         log.warning("DiscordList webhook secret is not configured.")
-        return HttpResponse(status=401)
+        return _with_cors(request, HttpResponse(status=401))
 
     if payload.get("is_test") or payload.get("test") or payload.get("type") == "webhook.test":
-        return JsonResponse({"ok": True, "test": True}, status=200)
+        return _with_cors(request, JsonResponse({"ok": True, "test": True}, status=200))
 
     user_id = _extract_user_id(payload)
     if user_id is None:
         if _looks_like_test_payload(payload):
-            return JsonResponse({"ok": True, "test": True}, status=200)
+            return _with_cors(request, JsonResponse({"ok": True, "test": True}, status=200))
         log.warning("DiscordList webhook payload did not contain a usable user id.")
-        return JsonResponse({"ok": False, "error": "missing_user_id"}, status=400)
+        return _with_cors(request, JsonResponse({"ok": False, "error": "missing_user_id"}, status=400))
 
     vote_id = _extract_vote_id(payload)
     _dispatch_vote_reward(user_id, vote_id, config)
-    return JsonResponse({"ok": True, "queued": True, "user_id": user_id, "vote_id": vote_id}, status=200)
+    return _with_cors(request, JsonResponse({"ok": True, "queued": True, "user_id": user_id, "vote_id": vote_id}, status=200))
