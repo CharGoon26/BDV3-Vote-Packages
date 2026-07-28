@@ -150,7 +150,6 @@ def _is_authorized(received_token: str | None, expected_token: str | None) -> bo
 
 def _extract_user_id(payload: dict) -> int | None:
     candidates = [
-        payload.get("id"),
         payload.get("user_id"),
         payload.get("userId"),
         payload.get("discord_user_id"),
@@ -170,7 +169,7 @@ def _extract_user_id(payload: dict) -> int | None:
                 user.get("platform_id"),
             ]
         )
-    elif isinstance(user, str):
+    elif user not in (None, ""):
         candidates.append(user)
 
     for candidate in candidates:
@@ -185,7 +184,7 @@ def _extract_user_id(payload: dict) -> int | None:
 
 
 def _extract_vote_id(payload: dict) -> str | None:
-    for key in ("vote_id", "id", "event_id", "transaction_id"):
+    for key in ("vote_id", "event_id", "transaction_id", "voteId", "eventId"):
         value = payload.get(key)
         if value not in (None, ""):
             return str(value)
