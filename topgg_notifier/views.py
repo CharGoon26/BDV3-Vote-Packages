@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import io
 import json
 import logging
 import os
@@ -94,31 +93,6 @@ def _build_reward_dm(ball, is_new: bool) -> str:
     return "\n".join(lines)
 
 
-def _generate_card_image(ball) -> tuple[bytes, str, str] | None:
-    try:
-        from ballsdex.core.image_generator.image_gen import draw_card
-
-        image, save_kwargs = draw_card(ball)
-        buffer = io.BytesIO()
-        image_format = save_kwargs.get("format", "WEBP")
-        image.save(buffer, format=image_format)
-        buffer.seek(0)
-        image.close()
-
-        ext = str(image_format).lower()
-        if ext == "jpeg":
-            ext = "jpg"
-
-        content_type = f"image/{ext}"
-        if ext == "jpg":
-            content_type = "image/jpeg"
-
-        return buffer.getvalue(), f"vote_reward.{ext}", content_type
-    except Exception:
-        log.exception("Failed to generate Top.gg reward image for ball %s", ball.pk)
-        return None
-
-
 async def _send_dm(user_id: int, content: str, ball=None) -> bool:
     token = settings.bot_token or os.environ.get("DISCORD_TOKEN") or os.environ.get("BOT_TOKEN") or os.environ.get("TOKEN")
     if not token:
@@ -139,37 +113,17 @@ async def _send_dm(user_id: int, content: str, ball=None) -> bool:
                     return False
                 channel_data = await resp.json()
 
-            image_data = _generate_card_image(ball) if ball else None
-
-            if image_data:
-                image_bytes, filename, image_content_type = image_data
-                form = aiohttp.FormData()
-                form.add_field("payload_json", json.dumps({"content": content}), content_type="application/json")
-                form.add_field("files[0]", image_bytes, filename=filename, content_type=image_content_type)
-
-                async with session.post(
-                    f"https://discord.com/api/v10/channels/{channel_data['id']}/messages", data=form
-                ) as resp:
-                    if resp.status >= 400:
-                        log.warning(
-                            "Failed to send Top.gg reward DM with image to user %s (status %s): %s",
-                            user_id,
-                            resp.status,
-                            await resp.text(),
-                        )
-                        return False
-            else:
-                async with session.post(
-                    f"https://discord.com/api/v10/channels/{channel_data['id']}/messages", json={"content": content}
-                ) as resp:
-                    if resp.status >= 400:
-                        log.warning(
-                            "Failed to send Top.gg reward DM to user %s (status %s): %s",
-                            user_id,
-                            resp.status,
-                            await resp.text(),
-                        )
-                        return False
+            async with session.post(
+                f"https://discord.com/api/v10/channels/{channel_data['id']}/messages", json={"content": content}
+            ) as resp:
+                if resp.status >= 400:
+                    log.warning(
+                        "Failed to send Top.gg reward DM to user %s (status %s): %s",
+                        user_id,
+                        resp.status,
+                        await resp.text(),
+                    )
+                    return False
 
         return True
     except Exception:
