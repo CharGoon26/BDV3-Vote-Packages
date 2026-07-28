@@ -320,7 +320,7 @@ async def _process_vote_reward(user_id: int, vote_id: str | None, config: BotLis
     try:
         player, _ = await Player.objects.aget_or_create(discord_id=user_id)
 
-        reward_history = list((player.extra_data or {}).get("discordbotlist_vote_rewards", []))
+        reward_history = list((player.extra_data or {}).get("botlistme_vote_rewards", []))
         if vote_id and any(str(entry.get("vote_id")) == vote_id for entry in reward_history):
             log.info("Skipping duplicate BotList.me reward for vote %s / user %s", vote_id, user_id)
             return
@@ -351,7 +351,7 @@ async def _process_vote_reward(user_id: int, vote_id: str | None, config: BotLis
                 "special": ball.specialcard.name if ball.specialcard else None,
             }
         )
-        player.extra_data["discordbotlist_vote_rewards"] = reward_history[-50:]
+        player.extra_data["botlistme_vote_rewards"] = reward_history[-50:]
         await player.asave(update_fields=("extra_data",))
 
         dm_sent = await _send_dm(user_id, _build_reward_dm(ball, is_new))
