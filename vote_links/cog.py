@@ -135,6 +135,9 @@ class Vote(commands.Cog):
     @app_commands.command(name="vote")
     @app_commands.guild_only()
     async def vote(self, interaction: discord.Interaction["BallsDexBot"]):
+        """
+        Show available vote links to earn rewards.
+        """
         vote_sources = await self._get_vote_sources()
         embed = discord.Embed(
             title="Vote Rewards",
