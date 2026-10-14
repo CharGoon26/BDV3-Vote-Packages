@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -30,6 +31,11 @@ try:
     from botlistme_notifier.models import BotListMeConfig
 except Exception:  # pragma: no cover - optional package wiring
     BotListMeConfig = None  # type: ignore[assignment]
+
+from settings.models import settings
+from vote_links.vote_notifier import init_vote_notifier
+
+log = logging.getLogger("ballsdex.packages.vote_links")
 
 
 @dataclass(frozen=True)
@@ -151,7 +157,7 @@ class Vote(commands.Cog):
         if vote_sources:
             lines = [f"• [{source.label}]({source.url})" for source in vote_sources]
             embed.add_field(name="Available Vote Links", value="\n".join(lines), inline=False)
-            embed.set_footer(text="Only sites with saved vote links are shown.")
+            embed.set_footer(text="Do /feedback if card rewards are not received after voting.")
             view = VoteLinkView(vote_sources)
         else:
             embed.add_field(
@@ -169,4 +175,11 @@ class Vote(commands.Cog):
 
 
 async def setup(bot: "BallsDexBot"):
+    # Initialize vote notifier with shared HTTP session
+    bot_token = settings.bot_token or os.environ.get("BOT_TOKEN") or os.environ.get("TOKEN")
+    if bot_token:
+        await init_vote_notifier(bot_token)
+    else:
+        log.warning("Bot token not available, vote notifier will not work")
+
     await bot.add_cog(Vote(bot))
