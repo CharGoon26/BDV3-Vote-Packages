@@ -4,25 +4,46 @@ import asyncio
 import base64
 import binascii
 import hashlib
+import hmac
 import json
 import logging
-import hmac
 import os
 import random
 import threading
 from types import SimpleNamespace
 
-import aiohttp
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
+from vote_links.vote_notifier import get_vote_notifier
 
-from settings.models import settings
 from bd_models.models import Player
 
 from .models import DiscordGGConfig
 
 log = logging.getLogger("ballsdex.discordlist")
+
+
+def _run_in_fresh_thread(coro) -> None:
+    """Run a coroutine in a dedicated thread with its own event loop.
+
+    asgiref's thread-sensitive ``sync_to_async`` relies on a
+    ``CurrentThreadExecutor`` that is tied to the request thread and marked
+    broken once the request finishes. Scheduling the reward work with
+    ``asyncio.create_task`` defers it past that point, so the DB call fails
+    with "CurrentThreadExecutor already quit or is broken". Running the
+    coroutine in a fresh thread with a new loop gives it an independent
+    executor that stays alive for the whole task.
+    """
+
+    def _runner() -> None:
+        try:
+            asyncio.run(coro)
+        except Exception:
+            log.exception("Unexpected error in reward thread")
+
+    threading.Thread(target=_runner, daemon=True).start()
+
 
 
 class _RewardBotStub:
@@ -205,46 +226,12 @@ def _looks_like_test_payload(payload: dict) -> bool:
 
 
 def _log_payload(payload: dict, payload_source: str) -> None:
-    log.warning("DiscordList webhook payload source=%s keys=%s payload=%r", payload_source, sorted(payload.keys()), payload)
-
-
-async def _send_vote_notification(user_id: int, ball, is_new: bool, config: DiscordGGConfig | None) -> bool:
-    token = settings.bot_token or os.environ.get("BOT_TOKEN") or os.environ.get("TOKEN")
-    channel_id = None
-    if config and config.notification_channel_id:
-        channel_id = str(config.notification_channel_id)
-    else:
-        channel_id = os.environ.get("VOTE_NOTIFICATION_CHANNEL_ID")
-
-    if not token or not channel_id:
-        return False
-
-    headers = {"Authorization": f"Bot {token}"}
-
-    try:
-        async with aiohttp.ClientSession(headers=headers) as session:
-            message_lines = [
-                f"<@{user_id}> voted on DiscordList and received **{ball.ball.country}** `#{ball.pk:0X}`.",
-                f"ATK: `{ball.attack_bonus:+}%` • HP: `{ball.health_bonus:+}%`",
-            ]
-            if ball.specialcard:
-                message_lines.append(f"Special: {ball.specialcard.name}")
-            if is_new:
-                message_lines.append("This card was new to their completion.")
-
-            embed = {
-                "title": "🎉 New Vote!",
-                "description": "\n".join(message_lines),
-                "color": 0xFFD700,
-            }
-            await session.post(f"https://discord.com/api/v10/channels/{channel_id}/messages", json={"embeds": [embed]})
-        return True
-    except asyncio.CancelledError:
-        log.warning("DiscordList vote notification was cancelled while contacting Discord")
-        return False
-    except Exception:
-        log.exception("Failed to send DiscordList vote notification to channel")
-        return False
+    log.warning(
+        "DiscordList webhook payload source=%s keys=%s payload=%r",
+        payload_source,
+        sorted(payload.keys()),
+        payload,
+    )
 
 
 def _build_reward_dm(ball, is_new: bool) -> str:
@@ -267,47 +254,6 @@ def _build_reward_dm(ball, is_new: bool) -> str:
         lines.append("This card was new to your completion.")
 
     return "\n".join(lines)
-
-
-async def _send_dm(user_id: int, content: str) -> bool:
-    token = settings.bot_token or os.environ.get("BOT_TOKEN") or os.environ.get("TOKEN")
-    if not token:
-        log.warning("Cannot send DiscordList reward DM: bot token not available in admin-panel env.")
-        return False
-
-    headers = {"Authorization": f"Bot {token}"}
-
-    try:
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.post(
-                "https://discord.com/api/v10/users/@me/channels", json={"recipient_id": str(user_id)}
-            ) as resp:
-                if resp.status >= 400:
-                    log.warning(
-                        "Failed to open DM channel for user %s (status %s): %s", user_id, resp.status, await resp.text()
-                    )
-                    return False
-                channel_data = await resp.json()
-
-            async with session.post(
-                f"https://discord.com/api/v10/channels/{channel_data['id']}/messages", json={"content": content}
-            ) as resp:
-                if resp.status >= 400:
-                    log.warning(
-                        "Failed to send DiscordList reward DM to user %s (status %s): %s",
-                        user_id,
-                        resp.status,
-                        await resp.text(),
-                    )
-                    return False
-
-        return True
-    except asyncio.CancelledError:
-        log.warning("DiscordList DM send was cancelled while contacting Discord for user %s", user_id)
-        return False
-    except Exception:
-        log.exception("Unexpected error while sending DiscordList reward DM to user %s", user_id)
-        return False
 
 
 async def _process_vote_reward(user_id: int, vote_id: str | None, config: DiscordGGConfig | None) -> None:
@@ -348,8 +294,20 @@ async def _process_vote_reward(user_id: int, vote_id: str | None, config: Discor
         player.extra_data["discordlist_vote_rewards"] = reward_history[-50:]
         await player.asave(update_fields=("extra_data",))
 
-        dm_sent = await _send_dm(user_id, _build_reward_dm(ball, is_new))
-        notification_sent = await _send_vote_notification(user_id, ball, is_new, config)
+        notifier = get_vote_notifier()
+
+        notification_channel_id = None
+        if config and config.notification_channel_id:
+            notification_channel_id = config.notification_channel_id
+        else:
+            env_channel = os.environ.get("VOTE_NOTIFICATION_CHANNEL_ID")
+            if env_channel:
+                notification_channel_id = int(env_channel)
+
+        dm_sent = await notifier.send_dm(user_id, _build_reward_dm(ball, is_new), "DiscordList")
+        notification_sent = await notifier.send_notification(
+            user_id, ball, is_new, notification_channel_id, "DiscordList"
+        )
 
         log.info(
             "Granted DiscordList vote reward to user %s: %s #%s (vote_id=%s, dm_sent=%s, notification_sent=%s)",
@@ -362,17 +320,6 @@ async def _process_vote_reward(user_id: int, vote_id: str | None, config: Discor
         )
     except Exception:
         log.exception("Unexpected error while processing DiscordList vote reward for user %s", user_id)
-
-
-def _dispatch_vote_reward(user_id: int, vote_id: str | None, config: DiscordGGConfig | None) -> None:
-    def runner() -> None:
-        try:
-            asyncio.run(_process_vote_reward(user_id, vote_id, config))
-        except Exception:
-            log.exception("DiscordList background worker crashed for user %s", user_id)
-
-    thread = threading.Thread(target=runner, daemon=True, name=f"discordlist-vote-{user_id}")
-    thread.start()
 
 
 def _with_cors(request: HttpRequest, response: HttpResponse) -> HttpResponse:
@@ -423,5 +370,11 @@ async def discordlist_vote_webhook(request: HttpRequest) -> HttpResponse:
         return _with_cors(request, JsonResponse({"ok": False, "error": "missing_user_id"}, status=400))
 
     vote_id = _extract_vote_id(payload)
-    _dispatch_vote_reward(user_id, vote_id, config)
-    return _with_cors(request, JsonResponse({"ok": True, "queued": True, "user_id": user_id, "vote_id": vote_id}, status=200))
+    _run_in_fresh_thread(_process_vote_reward(user_id, vote_id, config))
+    return _with_cors(
+        request,
+        JsonResponse(
+            {"ok": True, "queued": True, "user_id": user_id, "vote_id": vote_id},
+            status=200,
+        ),
+    )
