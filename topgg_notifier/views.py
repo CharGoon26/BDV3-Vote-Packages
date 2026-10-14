@@ -1,24 +1,47 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
 import logging
 import os
 import random
+import threading
 from types import SimpleNamespace
 
-import aiohttp
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
+from vote_links.vote_notifier import get_vote_notifier
 
-from settings.models import settings
 from bd_models.models import Player
 
 from .models import TopGGConfig
 
 log = logging.getLogger("ballsdex.topgg")
+
+
+def _run_in_fresh_thread(coro) -> None:
+    """Run a coroutine in a dedicated thread with its own event loop.
+
+    asgiref's thread-sensitive ``sync_to_async`` relies on a
+    ``CurrentThreadExecutor`` that is tied to the request thread and marked
+    broken once the request finishes. Scheduling the reward work with
+    ``asyncio.create_task`` defers it past that point, so the DB call fails
+    with "CurrentThreadExecutor already quit or is broken". Running the
+    coroutine in a fresh thread with a new loop gives it an independent
+    executor that stays alive for the whole task.
+    """
+
+    def _runner() -> None:
+        try:
+            asyncio.run(coro)
+        except Exception:
+            log.exception("Unexpected error in reward thread")
+
+    threading.Thread(target=_runner, daemon=True).start()
+
 
 
 class _RewardBotStub:
@@ -93,85 +116,77 @@ def _build_reward_dm(ball, is_new: bool) -> str:
     return "\n".join(lines)
 
 
-async def _send_dm(user_id: int, content: str, ball=None) -> bool:
-    token = settings.bot_token or os.environ.get("DISCORD_TOKEN") or os.environ.get("BOT_TOKEN") or os.environ.get("TOKEN")
-    if not token:
-        log.warning("Cannot send Top.gg reward DM: bot token not available in admin-panel env.")
-        return False
-
-    headers = {"Authorization": f"Bot {token}"}
-
-    try:
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.post(
-                "https://discord.com/api/v10/users/@me/channels", json={"recipient_id": str(user_id)}
-            ) as resp:
-                if resp.status >= 400:
-                    log.warning(
-                        "Failed to open DM channel for user %s (status %s): %s", user_id, resp.status, await resp.text()
-                    )
-                    return False
-                channel_data = await resp.json()
-
-            async with session.post(
-                f"https://discord.com/api/v10/channels/{channel_data['id']}/messages", json={"content": content}
-            ) as resp:
-                if resp.status >= 400:
-                    log.warning(
-                        "Failed to send Top.gg reward DM to user %s (status %s): %s",
-                        user_id,
-                        resp.status,
-                        await resp.text(),
-                    )
-                    return False
-
-        return True
-    except Exception:
-        log.exception("Unexpected error while sending Top.gg reward DM to user %s", user_id)
-        return False
-
-
-async def _send_vote_notification(user_id: int, ball, is_new: bool, config: TopGGConfig | None) -> bool:
-    token = settings.bot_token or os.environ.get("DISCORD_TOKEN") or os.environ.get("BOT_TOKEN") or os.environ.get("TOKEN")
-    channel_id = None
-    if config and config.notification_channel_id:
-        channel_id = str(config.notification_channel_id)
-    else:
-        channel_id = os.environ.get("VOTE_NOTIFICATION_CHANNEL_ID")
-
-    if not token or not channel_id:
-        return False
-
-    headers = {"Authorization": f"Bot {token}"}
-
-    try:
-        async with aiohttp.ClientSession(headers=headers) as session:
-            description_lines = [
-                f"<@{user_id}> voted on Top.gg and received **{ball.ball.country}** `#{ball.pk:0X}`.",
-                f"ATK: `{ball.attack_bonus:+}%` • HP: `{ball.health_bonus:+}%`",
-            ]
-            if ball.specialcard:
-                description_lines.append(f"Special: {ball.specialcard.name}")
-            if is_new:
-                description_lines.append("This card was new to their completion.")
-
-            embed = {
-                "title": "🎉 New Vote!",
-                "description": "\n".join(description_lines),
-                "color": 0xFFD700,
-            }
-            await session.post(f"https://discord.com/api/v10/channels/{channel_id}/messages", json={"embeds": [embed]})
-        return True
-    except Exception:
-        log.exception("Failed to send vote notification to channel")
-        return False
-
-
 def _resolve_vote_id(data: dict) -> str | None:
     vote_id = data.get("id")
     if vote_id is None:
         return None
     return str(vote_id)
+
+
+async def _process_vote_reward(user_id: int, vote_id: str | None, config: TopGGConfig | None) -> None:
+    try:
+        player, _ = await Player.objects.aget_or_create(discord_id=user_id)
+
+        reward_history = list((player.extra_data or {}).get("topgg_vote_rewards", []))
+        if vote_id and any(str(entry.get("vote_id")) == vote_id for entry in reward_history):
+            log.info("Skipping duplicate Top.gg reward for vote %s / user %s", vote_id, user_id)
+            return
+
+        from ballsdex.packages.countryballs.countryball import BallSpawnView
+        from bd_models.models import Ball
+
+        countryballs = [b async for b in Ball.objects.filter(enabled=True)]
+        if not countryballs:
+            log.error("Top.gg reward failed: no enabled balls found in database.")
+            return
+
+        weights = [b.rarity for b in countryballs]
+        chosen_ball = random.choices(population=countryballs, weights=weights, k=1)[0]
+
+        reward_view = BallSpawnView(_RewardBotStub(), chosen_ball)
+        reward_view.message = SimpleNamespace(created_at=timezone.now())
+
+        ball, is_new = await reward_view.catch_ball(_RewardUserStub(user_id), player=player, guild=None)
+
+        reward_history.append(
+            {
+                "vote_id": vote_id,
+                "user_id": user_id,
+                "ball": ball.ball.country,
+                "ball_instance_id": ball.pk,
+                "created_at": timezone.now().timestamp(),
+                "special": ball.specialcard.name if ball.specialcard else None,
+            }
+        )
+        player.extra_data["topgg_vote_rewards"] = reward_history[-50:]
+        await player.asave(update_fields=("extra_data",))
+
+        notifier = get_vote_notifier()
+
+        notification_channel_id = None
+        if config and config.notification_channel_id:
+            notification_channel_id = config.notification_channel_id
+        else:
+            env_channel = os.environ.get("VOTE_NOTIFICATION_CHANNEL_ID")
+            if env_channel:
+                notification_channel_id = int(env_channel)
+
+        dm_sent = await notifier.send_dm(user_id, _build_reward_dm(ball, is_new), "Top.gg")
+        notification_sent = await notifier.send_notification(
+            user_id, ball, is_new, notification_channel_id, "Top.gg"
+        )
+
+        log.info(
+            "Granted Top.gg vote reward to user %s: %s #%s (vote_id=%s, dm_sent=%s, notification_sent=%s)",
+            user_id,
+            ball.ball.country,
+            f"{ball.pk:0X}",
+            vote_id,
+            dm_sent,
+            notification_sent,
+        )
+    except Exception:
+        log.exception("Unexpected error while processing Top.gg vote reward for user %s", user_id)
 
 
 @csrf_exempt
@@ -218,64 +233,14 @@ async def topgg_vote_webhook(request: HttpRequest) -> HttpResponse:
         user_id = int(raw_user_id)
     except (TypeError, ValueError):
         return JsonResponse({"ok": False, "error": "invalid_user_platform_id"}, status=400)
-
-    player, _ = await Player.objects.aget_or_create(discord_id=user_id)
-
-    reward_history = list((player.extra_data or {}).get("topgg_vote_rewards", []))
-    if vote_id and any(str(entry.get("vote_id")) == vote_id for entry in reward_history):
-        log.info("Skipping duplicate Top.gg reward for vote %s / user %s", vote_id, user_id)
-        return JsonResponse({"ok": True, "deduped": True}, status=200)
-
-    from ballsdex.packages.countryballs.countryball import BallSpawnView
-    from bd_models.models import Ball
-
-    countryballs = [b async for b in Ball.objects.filter(enabled=True)]
-    if not countryballs:
-        log.error("Top.gg reward failed: no enabled balls found in database.")
-        return JsonResponse({"ok": False, "error": "no_ball_to_spawn"}, status=500)
-
-    weights = [b.rarity for b in countryballs]
-    chosen_ball = random.choices(population=countryballs, weights=weights, k=1)[0]
-
-    reward_view = BallSpawnView(_RewardBotStub(), chosen_ball)
-    reward_view.message = SimpleNamespace(created_at=timezone.now())
-
-    ball, is_new = await reward_view.catch_ball(_RewardUserStub(user_id), player=player, guild=None)
-
-    reward_history.append(
-        {
-            "vote_id": vote_id,
-            "user_id": user_id,
-            "ball": ball.ball.country,
-            "ball_instance_id": ball.pk,
-            "created_at": timezone.now().timestamp(),
-            "special": ball.specialcard.name if ball.specialcard else None,
-        }
-    )
-    player.extra_data["topgg_vote_rewards"] = reward_history[-50:]
-    await player.asave(update_fields=("extra_data",))
-
-    dm_sent = await _send_dm(user_id, _build_reward_dm(ball, is_new), ball=ball)
-    notification_sent = await _send_vote_notification(user_id, ball, is_new, config)
-
-    log.info(
-        "Granted Top.gg vote reward to user %s: %s #%s (vote_id=%s, dm_sent=%s, notification_sent=%s)",
-        user_id,
-        ball.ball.country,
-        f"{ball.pk:0X}",
-        vote_id,
-        dm_sent,
-        notification_sent,
-    )
+    _run_in_fresh_thread(_process_vote_reward(user_id, vote_id, config))
 
     return JsonResponse(
         {
             "ok": True,
-            "vote_id": vote_id,
+            "queued": True,
             "user_id": user_id,
-            "ball_instance_id": ball.pk,
-            "dm_sent": dm_sent,
-            "notification_sent": notification_sent,
+            "vote_id": vote_id,
         },
         status=200,
     )
